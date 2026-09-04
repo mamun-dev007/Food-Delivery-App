@@ -1,0 +1,44 @@
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes: light --default, dark;
+}
+
+/* Responsive food grid: CSS Grid auto-fit with a comfortable min card width.
+   1 card/row on phones, 2–3 on tablet, 4 on desktop — cards always wrap to
+   the next row, never scroll horizontally. */
+.food-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
+  gap: 1.5rem;
+}
+
+/* Hidden scrollbar for the horizontal Related Foods strip. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Print styles: when printing an invoice, only the invoice card is shown and
+   action buttons / nav are hidden. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-area,
+  .print-area * {
+    visibility: visible;
+  }
+  .print-area {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
