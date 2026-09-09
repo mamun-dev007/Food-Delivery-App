@@ -5,6 +5,8 @@ import {
   loginUser,
   getMe,
   logoutFirebase,
+  signInWithSignupToken,
+  clearSignupSession,
 } from "../services/authService";
 import { useCartStore } from "../store/cartStore";
 import { useFavoritesStore } from "../store/favoritesStore";
@@ -73,15 +75,38 @@ export const useAuthStore = create((set, get) => ({
     saveLocalProfile({ ...data, _userId: current?.id || null });
   },
 
+  // Step 1 of registration. Nothing is created or stored on the server yet —
+  // the backend just validates + emails an OTP and returns a signed
+  // `verificationToken` that the UI must carry to /verify-email. So no session
+  // is established here either.
   signup: async (payload) => {
     set({ loading: true });
     try {
-      const { token, user } = await signupUser(payload);
-      get().setSession(token, user);
-      return user;
+      return await signupUser(payload);
     } finally {
       set({ loading: false });
     }
+  },
+
+  // Called after a successful OTP verification, when the backend has just
+  // created the REAL account (Firebase + MongoDB, isVerified: true). Signs in
+  // with the returned Firebase custom token, persists the fresh user doc so
+  // guards immediately grant dashboard access, and clears the pending signup
+  // session (it cannot be reused).
+  completeVerification: async ({ user: serverUser, customToken }) => {
+    if (customToken) {
+      try {
+        await signInWithSignupToken(customToken);
+      } catch {
+        // Sign-in already succeeded through normal login — non-fatal.
+      }
+    }
+    clearSignupSession();
+    const current = get().user || {};
+    const user = { ...current, ...(serverUser || {}), isVerified: true };
+    localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+    set({ user, role: user.role || get().role });
+    rehydrateUserScopedState();
   },
 
   login: async (payload) => {

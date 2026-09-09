@@ -230,7 +230,7 @@ const AdminNavbar = ({ onToggleSidebar, search, onSearch }) => {
           </button>
 
           {notifOpen && (
-            <div className="absolute right-0 mt-2 w-[min(90vw,22rem)] overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-xl">
+            <div className="absolute right-0 mt-2 w-[min(90vw,22rem)] overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-xl max-sm:fixed max-sm:inset-x-3 max-sm:top-14 max-sm:mt-0 max-sm:w-auto">
               {/* Header */}
               <div className="flex items-center justify-between gap-2 border-b border-base-200 px-4 py-3">
                 <p className="text-sm font-bold text-base-content">Notifications</p>

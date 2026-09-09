@@ -14,7 +14,9 @@ import {
 import toast from "react-hot-toast";
 import { useAuthStore } from "../../store/authStore";
 import { uploadProfilePhoto } from "../../services/storageService";
-import { ROLES, ROLE_DASHBOARD } from "../../utils/roles";
+import { saveSignupSession } from "../../services/authService";
+import { ROLES } from "../../utils/roles";
+import { onlyDigits, validatePhone } from "../../utils/phone";
 
 const CustomerSignup = () => {
   const navigate = useNavigate();
@@ -48,12 +50,29 @@ const CustomerSignup = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
 
+    if (!name.trim()) {
+      toast.error("Please enter your full name.");
+      return;
+    }
+    if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      toast.error("Please enter a valid email address.");
+      return;
+    }
+    const phoneErr = validatePhone(phone);
+    if (phoneErr) {
+      toast.error(phoneErr);
+      return;
+    }
     if (password.length < 6) {
       toast.error("Password must be at least 6 characters.");
       return;
     }
     if (password !== confirm) {
       toast.error("Passwords do not match.");
+      return;
+    }
+    if (!deliveryAddress.trim()) {
+      toast.error("Please enter your delivery address.");
       return;
     }
     if (!agree) {
@@ -67,18 +86,31 @@ const CustomerSignup = () => {
         avatar_url = await uploadProfilePhoto(photoFile);
       }
 
-      const user = await signup({
-        name,
+      const res = await signup({
+        name: name.trim(),
         email,
-        phone,
+        phone: onlyDigits(phone),
         password,
         role: ROLES.customer,
         deliveryAddress,
         avatar_url,
         termsAccepted: true,
       });
-      toast.success("Account created!");
-      navigate(ROLE_DASHBOARD[user?.role] || "/customer/dashboard");
+      saveSignupSession({
+        email: email.trim().toLowerCase(),
+        verificationToken: res?.verificationToken,
+      });
+      toast.success(
+        "We sent a 6-digit code to your email. Verify it to activate your account."
+      );
+      navigate("/verify-email", {
+        replace: true,
+        state: {
+          email: email.trim().toLowerCase(),
+          verificationToken: res?.verificationToken,
+          fromSignup: true,
+        },
+      });
     } catch (err) {
       toast.error(err?.message || "Something went wrong");
     }
@@ -173,10 +205,16 @@ const CustomerSignup = () => {
                 <Phone className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-base-content/40" />
                 <input
                   type="tel"
+                  inputMode="numeric"
                   className="input input-bordered w-full pl-10"
                   placeholder="+8801XXXXXXXXX"
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
+                  maxLength={11}
+                  onChange={(e) => setPhone(onlyDigits(e.target.value))}
+                  onPaste={(e) => {
+                    e.preventDefault();
+                    setPhone(onlyDigits(e.clipboardData.getData("text")));
+                  }}
                   required
                 />
               </div>

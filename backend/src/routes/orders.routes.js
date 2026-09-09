@@ -6,6 +6,7 @@ import { buildSubOrders, round2 } from "../services/revenue.service.js";
 
 const FOOD_COLLECTION = "food-collection";
 const LOW_STOCK_THRESHOLD = 10;
+const INTENT_TTL_MS = 30 * 60 * 1000; // a payment session expires after 30 min
 
 // ============================================================
 // Order number / tracking helpers
@@ -28,6 +29,256 @@ function makeOrderNo() {
 function makeTrackingId() {
   const rand = Math.floor(100000 + Math.random() * 900000);
   return `TRK-${rand}`;
+}
+
+function randomTxnId() {
+  return `TXN-${Math.floor(100000000 + Math.random() * 900000000)}`;
+}
+
+// Resolve the authenticated user id (from the verified Firebase token) or
+// respond with a 401/400 and return null.
+function resolveUser(req, res) {
+  const userId = req.userData?.id;
+  if (!userId) {
+    res.status(401).json({ error: "Authentication required" });
+    return null;
+  }
+  let userObjectId;
+  try {
+    userObjectId = new ObjectId(userId);
+  } catch {
+    res.status(400).json({ error: "Invalid user id" });
+    return null;
+  }
+  return { userId, userObjectId };
+}
+
+// Map a stored order-summary doc to the exact JSON shape the frontend consumes
+// on the Invoice + payment pages.
+function toOrderJson(doc) {
+  return {
+    id: doc._id.toString(),
+    order_no: doc.order_no,
+    tracking_id: doc.tracking_id,
+    restaurant_id: doc.restaurant_id,
+    restaurant_name: doc.restaurant_name,
+    restaurant_logo: doc.restaurant_logo,
+    restaurant_count: doc.restaurant_count,
+    sub_orders: doc.sub_orders || null,
+    items: doc.items,
+    subtotal: doc.subtotal,
+    discount: doc.discount || 0,
+    delivery_fee: doc.delivery_fee,
+    total_amount: doc.total_amount,
+    payment_method: doc.payment_method,
+    payment_status: doc.payment_status,
+    order_note: doc.order_note || "",
+    delivery: doc.delivery || {},
+    status: doc.status,
+    created_at: (doc.created_at || doc.updated_at || new Date()).toISOString(),
+    updated_at: (doc.updated_at || doc.created_at || new Date()).toISOString(),
+  };
+}
+
+// Shape of a payment intent for the Stripe-style checkout page.
+function toIntentJson(intent) {
+  const od = intent.order_doc || {};
+  return {
+    order_no: intent.order_no,
+    tracking_id: intent.tracking_id,
+    restaurant_name: od.restaurant_name,
+    restaurant_logo: od.restaurant_logo,
+    items: od.items,
+    subtotal: od.subtotal,
+    discount: od.discount,
+    delivery_fee: od.delivery_fee,
+    total_amount: od.total_amount,
+    payment_method: od.payment_method,
+    payment_status: intent.status === "paid" ? "Paid" : "Pending",
+    delivery: od.delivery,
+    created_at: (intent.created_at || new Date()).toISOString(),
+  };
+}
+
+// Validate + normalise an order payload into the order-summary document shape.
+// Returns { errors: [msg] } on validation failure, otherwise
+// { orderDoc, cleanItems, appliedCoupon, now }.
+function buildOrderPayload({ userObjectId, body, userName }) {
+  const items = Array.isArray(body.items) ? body.items : [];
+  const primaryRestaurant =
+    body.restaurant || (items[0] && items[0].restaurant) || {};
+  const delivery = body.delivery || {};
+
+  // ---- validation (fast-fail on the first error) ----
+  if (items.length === 0) return { errors: ["Cart is empty."] };
+  const anyRestaurant = items.some(
+    (it) => it.restaurant && it.restaurant.id != null
+  );
+  if (!primaryRestaurant.name && !anyRestaurant) {
+    return { errors: ["Restaurant information is required."] };
+  }
+  if (!delivery.address || !delivery.phone) {
+    return { errors: ["Delivery address and phone are required."] };
+  }
+
+  // Rebuild totals server-side so a client can't understate the price.
+  let subtotal = 0;
+  const cleanItems = items.map((it) => {
+    const unit_price = Math.max(0, Number(it.unit_price) || 0);
+    const qty = Math.max(1, Math.floor(Number(it.qty) || 1));
+    subtotal += unit_price * qty;
+    return {
+      food_id: it.food_id != null ? String(it.food_id) : null,
+      food_name: String(it.name || ""),
+      image: it.image || "",
+      quantity: qty,
+      unit_price: Math.round(unit_price * 100) / 100,
+      restaurant:
+        it.restaurant && it.restaurant.id != null
+          ? it.restaurant
+          : primaryRestaurant,
+    };
+  });
+  subtotal = Math.round(subtotal * 100) / 100;
+
+  const discount =
+    Math.max(0, Math.round((Number(body.discount) || 0) * 100) / 100);
+  // Delivery charge is always 10% of the subtotal (computed server-side).
+  const delivery_fee = Math.round(subtotal * 0.1 * 100) / 100;
+  const total_amount = Math.round((subtotal + delivery_fee - discount) * 100) / 100;
+
+  const now = new Date();
+  const order_no = makeOrderNo();
+  const tracking_id = makeTrackingId();
+
+  // Per-restaurant sub-orders: each restaurant's share of delivery fee and
+  // discount is split proportionally; revenue split is 5% / 95% of the
+  // restaurant's subtotal (invariant subtotal = commission + payout).
+  const sub_orders = buildSubOrders({
+    items: cleanItems,
+    primaryRestaurant,
+    subtotal,
+    deliveryFee: delivery_fee,
+    discount,
+  });
+
+  const restaurant_name = sub_orders
+    .map((s) => s.restaurant_name)
+    .filter(Boolean)
+    .join(", ");
+  const restaurant_count = sub_orders.length;
+
+  const orderDoc = {
+    user_id: userObjectId,
+    order_no,
+    tracking_id,
+    restaurant_id: sub_orders.length === 1 ? sub_orders[0].restaurant_id : null,
+    restaurant_name,
+    restaurant_logo: sub_orders[0] ? sub_orders[0].restaurant_logo : "",
+    restaurant_count,
+    sub_orders,
+    items: cleanItems,
+    subtotal,
+    discount,
+    delivery_fee,
+    total_amount,
+    payment_method: String(body.payment_method || "Cash on Delivery"),
+    payment_status: "Pending",
+    order_note: String(body.note || ""),
+    delivery: {
+      name: String(delivery.name || userName || ""),
+      phone: String(delivery.phone || ""),
+      address: String(delivery.address || ""),
+      city: String(delivery.city || ""),
+      instructions: String(delivery.instructions || ""),
+    },
+    status: "Pending",
+    created_at: now,
+    updated_at: now,
+  };
+
+  // Persist the applied coupon code (if any) so max_usage can be bumped later.
+  const appliedCoupon = body.coupon?.code
+    ? String(body.coupon.code).toUpperCase()
+    : null;
+  if (appliedCoupon) orderDoc.coupon_code = appliedCoupon;
+
+  return { orderDoc, cleanItems, appliedCoupon, now };
+}
+
+// Order side-effects that only run once an order is actually created
+// (i.e. on COD placement or on successful online-payment confirmation):
+// coupon usage, stock decrement + low-stock alerts, and the admin notification.
+async function runOrderSideEffects({
+  db,
+  orderDoc,
+  cleanItems,
+  appliedCoupon,
+  insertedId,
+  userId,
+  userName,
+}) {
+  if (appliedCoupon) {
+    try {
+      await db
+        .collection("coupons")
+        .updateOne({ code: appliedCoupon }, { $inc: { usage: 1 } });
+    } catch (e) {
+      console.warn("Failed to increment coupon usage:", e.message);
+    }
+  }
+
+  // Stock tracking + low-stock alerts.
+  try {
+    const foods = db.collection(FOOD_COLLECTION);
+    const notifications = db.collection("notifications");
+    for (const it of cleanItems) {
+      if (!it.food_id || !ObjectId.isValid(it.food_id)) continue;
+      const qty = Math.max(0, Number(it.quantity) || 1);
+      if (qty === 0) continue;
+      const food = await foods.findOne({ _id: new ObjectId(it.food_id) });
+      if (!food) continue;
+      const before = Math.max(0, Number(food.stock) || 0);
+      const after = Math.max(0, before - qty);
+      await foods.updateOne(
+        { _id: new ObjectId(it.food_id) },
+        { $inc: { stock: -qty }, $set: { updated_at: orderDoc.updated_at } }
+      );
+      if (before >= LOW_STOCK_THRESHOLD && after < LOW_STOCK_THRESHOLD) {
+        const foodName = food.food_name || food.name || "a food";
+        await notifications.insertOne({
+          type: "stock",
+          title: "Low stock alert",
+          message: `"${foodName}" is low (${after} left).`,
+          restaurant_id: String(food.restaurant_id || ""),
+          food_id: String(food._id),
+          food_name: foodName,
+          created_at: orderDoc.updated_at,
+          seen: false,
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("Failed to decrement food stock:", e.message);
+  }
+
+  // Role-based admin notification for the newly placed order.
+  try {
+    await createAdminNotification({
+      type: "order",
+      title: "New order received",
+      message: `${orderDoc.delivery.name || userName || "A customer"} placed order ${orderDoc.order_no} at ${orderDoc.restaurant_name || "a restaurant"}.`,
+      role: "customer",
+      userId,
+      userName: orderDoc.delivery.name || userName || "",
+      relatedId: orderDoc.order_no,
+      relatedType: "order",
+      navigateTo: "/admin/orders",
+      dedupeKey: `order_placed_${insertedId}`,
+    });
+  } catch (e) {
+    console.warn("Failed to create admin notification:", e.message);
+  }
 }
 
 export const ordersRouter = Router();
@@ -67,11 +318,6 @@ function getRangeStart(range) {
 //   total_orders   count of all orders in range
 //   orders[]       detailed, newest-first order cards
 //
-// The userId is injected via the authenticated request. In this demo the
-// JWT/store middleware would attach req.user; we read it from the header
-// so the client can pass it (X-User-Id). In production, replace with the
-// verified identity from your auth middleware.
-//
 // The query hits the `order-summary` collection using the composite index
 // (user_id, created_at) for the range scan, then a $facet computes the
 // aggregates and the detail rows in a single round-trip.
@@ -86,20 +332,8 @@ ordersRouter.get("/orders-summary", async (req, res, next) => {
       .json({ error: "Invalid range. Use one of: day, month, year" });
   }
 
-  // The user is guaranteed by verifyRole("customer") middleware mounted on
-  // /api/user. req.userData.id is the REAL MongoDB user id from the verified
-  // Firebase identity — the client-provided X-User-Id header is NOT trusted.
-  const userId = req.userData.id;
-  if (!userId) {
-    return res.status(401).json({ error: "Authentication required" });
-  }
-
-  let userObjectId;
-  try {
-    userObjectId = new ObjectId(userId);
-  } catch {
-    return res.status(400).json({ error: "Invalid user id" });
-  }
+  const who = resolveUser(req, res);
+  if (!who) return;
 
   const from = getRangeStart(range);
   const to = new Date(); // "now"
@@ -110,7 +344,7 @@ ordersRouter.get("/orders-summary", async (req, res, next) => {
 
     // Scope: this user's orders within [from, to]. Uses (user_id, created_at).
     const match = {
-      user_id: userObjectId,
+      user_id: who.userObjectId,
       created_at: { $gte: from, $lte: to },
     };
 
@@ -176,7 +410,6 @@ ordersRouter.get("/orders-summary", async (req, res, next) => {
       analytics.reduce((s, g) => s + (g.spent || 0), 0) -
       (cancelled ? cancelled.spent : 0);
 
-    // Make items consistent with the UI shape (already numeric).
     res.json({
       range,
       from: from.toISOString(),
@@ -193,243 +426,67 @@ ordersRouter.get("/orders-summary", async (req, res, next) => {
 // ============================================================
 // POST /api/user/orders
 // ============================================================
-// Creates a new order for the authenticated customer. The customer is derived
-// from the verified Firebase token (req.userData), never from the request body.
+// Creates a new order IMMEDIATELY (Cash on Delivery flow).
+// Online methods (bKash / Nagad / Card) do NOT use this route — they first
+// create a payment intent (/payments/intent) and the order only becomes real
+// once the customer confirms payment (/payments/:orderNo/confirm).
 //
 // Body (all validated on the backend):
 //   restaurant:  { id, name, logo }            (optional when items carry one)
 //   items:       [{ food_id, name, image, qty, unit_price, restaurant? }]
 //   subtotal, discount, delivery_fee, payment_method, note
 //   delivery:    { name, phone, house, road_area, city, instructions }
-//
-// An order may span multiple restaurants: each line item can carry its own
-// `restaurant` object (each cart item embeds one). The backend groups the
-// items per restaurant into `sub_orders[]` — one record per restaurant with
-// its own subtotal / fees / totals / 5% adminCommission / 95% restaurantRevenue.
-// Top-level totals remain the combined customer-facing figures.
-//
-// Writes the order to the `order-summary` collection (matching the seed shape
-// as closely as possible) plus a matching `payment-intg` record, and returns
-// the full order with a human-readable order_no (used for /invoice/:orderNo).
 // ============================================================
 ordersRouter.post("/orders", async (req, res, next) => {
   try {
-    const userId = req.userData.id;
-    if (!userId) {
-      return res.status(401).json({ error: "Authentication required" });
-    }
+    const who = resolveUser(req, res);
+    if (!who) return;
 
-    const body = req.body || {};
-    const items = Array.isArray(body.items) ? body.items : [];
-    const primaryRestaurant =
-      body.restaurant || (items[0] && items[0].restaurant) || {};
-    const delivery = body.delivery || {};
-
-    // ---- validation ----
-    if (items.length === 0) {
-      return res.status(400).json({ error: "Cart is empty." });
-    }
-    const anyRestaurant = items.some((it) => it.restaurant && it.restaurant.id != null);
-    if (!primaryRestaurant.name && !anyRestaurant) {
-      return res.status(400).json({ error: "Restaurant information is required." });
-    }
-    if (!delivery.address || !delivery.phone) {
-      return res.status(400).json({ error: "Delivery address and phone are required." });
-    }
-
-    // Rebuild totals server-side so a client can't understate the price.
-    let subtotal = 0;
-    const cleanItems = items.map((it) => {
-      const unit_price = Math.max(0, Number(it.unit_price) || 0);
-      const qty = Math.max(1, Math.floor(Number(it.qty) || 1));
-      subtotal += unit_price * qty;
-      return {
-        food_id: it.food_id != null ? String(it.food_id) : null,
-        food_name: String(it.name || ""),
-        image: it.image || "",
-        quantity: qty,
-        unit_price: Math.round(unit_price * 100) / 100,
-        restaurant:
-          it.restaurant && it.restaurant.id != null
-            ? it.restaurant
-            : primaryRestaurant,
-      };
+    const built = buildOrderPayload({
+      userObjectId: who.userObjectId,
+      body: req.body || {},
+      userName: req.userData.name || "",
     });
-    subtotal = Math.round(subtotal * 100) / 100;
+    if (built.errors) {
+      return res.status(400).json({ error: built.errors[0] });
+    }
 
-    const discount = Math.max(0, Math.round((Number(body.discount) || 0) * 100) / 100);
-    // Delivery charge is always 10% of the subtotal (computed server-side).
-    const delivery_fee = Math.round(subtotal * 0.1 * 100) / 100;
-    const total_amount = Math.round((subtotal + delivery_fee - discount) * 100) / 100;
-
-    const now = new Date();
-    const order_no = makeOrderNo();
-    const tracking_id = makeTrackingId();
-
-    // Per-restaurant sub-orders: each restaurant's share of delivery fee and
-    // discount is split proportionally; revenue split is 5% / 95% of the
-    // restaurant's subtotal (invariant subtotal = commission + payout).
-    const sub_orders = buildSubOrders({
-      items: cleanItems,
-      primaryRestaurant,
-      subtotal,
-      deliveryFee: delivery_fee,
-      discount,
-    });
-
-    const restaurant_name = sub_orders
-      .map((s) => s.restaurant_name)
-      .filter(Boolean)
-      .join(", ");
-    const restaurant_count = sub_orders.length;
-
-    const orderDoc = {
-      user_id: new ObjectId(userId),
-      order_no,
-      tracking_id,
-      restaurant_id:
-        sub_orders.length === 1 ? sub_orders[0].restaurant_id : null,
-      restaurant_name,
-      restaurant_logo: sub_orders[0] ? sub_orders[0].restaurant_logo : "",
-      restaurant_count,
-      sub_orders,
-      items: cleanItems,
-      subtotal,
-      discount,
-      delivery_fee,
-      total_amount,
-      payment_method: String(body.payment_method || "Cash on Delivery"),
-      payment_status: "Pending",
-      order_note: String(body.note || ""),
-      delivery: {
-        name: String(delivery.name || req.userData.name || ""),
-        phone: String(delivery.phone || ""),
-        address: String(delivery.address || ""),
-        city: String(delivery.city || ""),
-        instructions: String(delivery.instructions || ""),
-      },
-      status: "Pending",
-      created_at: now,
-      updated_at: now,
-    };
-
-    // Persist the applied coupon code (if any) and bump its usage so the
-    // max_usage limit is enforced over time. Non-blocking: admin sets usage.
-    const appliedCoupon = body.coupon?.code ? String(body.coupon.code).toUpperCase() : null;
-    if (appliedCoupon) orderDoc.coupon_code = appliedCoupon;
-
+    const { orderDoc, cleanItems, appliedCoupon } = built;
     const db = getDb();
     const orders = db.collection("order-summary");
     const result = await orders.insertOne(orderDoc);
 
-    if (appliedCoupon) {
-      try {
-        await db
-          .collection("coupons")
-          .updateOne({ code: appliedCoupon }, { $inc: { usage: 1 } });
-      } catch (e) {
-        console.warn("Failed to increment coupon usage:", e.message);
-      }
-    }
-
-    // Stock tracking + low-stock alerts. Every ordered quantity is removed
-    // from the restaurant's food stock; the moment an item drops below the
-    // low-stock threshold, a notification is created immediately.
-    try {
-      const foods = db.collection(FOOD_COLLECTION);
-      const notifications = db.collection("notifications");
-      for (const it of cleanItems) {
-        if (!it.food_id || !ObjectId.isValid(it.food_id)) continue;
-        const qty = Math.max(0, Number(it.quantity) || 1);
-        if (qty === 0) continue;
-        const food = await foods.findOne({ _id: new ObjectId(it.food_id) });
-        if (!food) continue;
-        const before = Math.max(0, Number(food.stock) || 0);
-        const after = Math.max(0, before - qty);
-        await foods.updateOne(
-          { _id: new ObjectId(it.food_id) },
-          { $inc: { stock: -qty }, $set: { updated_at: now } }
-        );
-        if (before >= LOW_STOCK_THRESHOLD && after < LOW_STOCK_THRESHOLD) {
-          const foodName = food.food_name || food.name || "a food";
-          await notifications.insertOne({
-            type: "stock",
-            title: "Low stock alert",
-            message: `"${foodName}" is low (${after} left).`,
-            restaurant_id: String(food.restaurant_id || ""),
-            food_id: String(food._id),
-            food_name: foodName,
-            created_at: now,
-            seen: false,
-          });
-        }
-      }
-    } catch (e) {
-      console.warn("Failed to decrement food stock:", e.message);
-    }
+    await runOrderSideEffects({
+      db,
+      orderDoc,
+      cleanItems,
+      appliedCoupon,
+      insertedId: result.insertedId,
+      userId: who.userId,
+      userName: req.userData.name || "",
+    });
 
     // Payment record for the invoice's payment details.
     try {
       const payments = db.collection("payment-intg");
       await payments.insertOne({
         order_id: result.insertedId,
-        user_id: new ObjectId(userId),
+        user_id: who.userObjectId,
         method: orderDoc.payment_method,
-        amount: total_amount,
+        amount: orderDoc.total_amount,
         currency: "BDT",
         status: orderDoc.payment_status,
-        transaction_id: `TXN-${Math.floor(100000000 + Math.random() * 900000000)}`,
+        transaction_id: randomTxnId(),
         gateway_response: {},
-        created_at: now,
+        created_at: orderDoc.created_at,
       });
     } catch (e) {
       // Payment record is auxiliary; don't fail the whole order on it.
       console.warn("Failed to write payment record:", e.message);
     }
 
-    // Role-based admin notification for the newly placed order.
-    try {
-      await createAdminNotification({
-        type: "order",
-        title: "New order received",
-        message: `${orderDoc.delivery.name || req.userData.name || "A customer"} placed order ${order_no} at ${orderDoc.restaurant_name || "a restaurant"}.`,
-        role: "customer",
-        userId,
-        userName: orderDoc.delivery.name || req.userData.name || "",
-        relatedId: order_no,
-        relatedType: "order",
-        navigateTo: "/admin/orders",
-        dedupeKey: `order_placed_${result.insertedId}`,
-      });
-    } catch (e) {
-      console.warn("Failed to create admin notification:", e.message);
-    }
-
-    res.status(201).json({
-      success: true,
-      order: {
-        id: result.insertedId.toString(),
-        order_no,
-        tracking_id,
-        restaurant_id: orderDoc.restaurant_id,
-        restaurant_name: orderDoc.restaurant_name,
-        restaurant_logo: orderDoc.restaurant_logo,
-        restaurant_count,
-        sub_orders,
-        items: cleanItems,
-        subtotal,
-        discount,
-        delivery_fee,
-        total_amount,
-        payment_method: orderDoc.payment_method,
-        payment_status: orderDoc.payment_status,
-        order_note: orderDoc.order_note,
-        delivery: orderDoc.delivery,
-        status: orderDoc.status,
-        created_at: now.toISOString(),
-        updated_at: now.toISOString(),
-      },
-    });
+    orderDoc._id = result.insertedId;
+    res.status(201).json({ success: true, order: toOrderJson(orderDoc) });
   } catch (err) {
     next(err);
   }
@@ -443,21 +500,12 @@ ordersRouter.post("/orders", async (req, res, next) => {
 // ============================================================
 ordersRouter.get("/orders/:orderNo", async (req, res, next) => {
   try {
-    const userId = req.userData.id;
-    if (!userId) {
-      return res.status(401).json({ error: "Authentication required" });
-    }
+    const who = resolveUser(req, res);
+    if (!who) return;
 
     const orderNo = String(req.params.orderNo || "");
     if (!orderNo) {
       return res.status(400).json({ error: "Order id is required" });
-    }
-
-    let userObjectId;
-    try {
-      userObjectId = new ObjectId(userId);
-    } catch {
-      return res.status(400).json({ error: "Invalid user id" });
     }
 
     const db = getDb();
@@ -473,7 +521,7 @@ ordersRouter.get("/orders/:orderNo", async (req, res, next) => {
     }
 
     const doc = await orders.findOne({
-      user_id: userObjectId,
+      user_id: who.userObjectId,
       $or: [
         { order_no: orderNo },
         ...(orderId ? [{ _id: orderId }] : []),
@@ -484,31 +532,211 @@ ordersRouter.get("/orders/:orderNo", async (req, res, next) => {
       return res.status(404).json({ error: "Order not found" });
     }
 
-    res.json({
-      success: true,
-      order: {
-        id: doc._id.toString(),
-        order_no: doc.order_no,
-        tracking_id: doc.tracking_id,
-        restaurant_id: doc.restaurant_id,
-        restaurant_name: doc.restaurant_name,
-        restaurant_logo: doc.restaurant_logo,
-        restaurant_count: doc.restaurant_count,
-        sub_orders: doc.sub_orders || null,
-        items: doc.items,
-        subtotal: doc.subtotal,
-        discount: doc.discount || 0,
-        delivery_fee: doc.delivery_fee,
-        total_amount: doc.total_amount,
-        payment_method: doc.payment_method,
-        payment_status: doc.payment_status,
-        order_note: doc.order_note || "",
-        delivery: doc.delivery || {},
-        status: doc.status,
-        created_at: (doc.created_at || doc.updated_at || new Date()).toISOString(),
-        updated_at: (doc.updated_at || doc.created_at || new Date()).toISOString(),
-      },
+    res.json({ success: true, order: toOrderJson(doc) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================================
+// POST /api/user/payments/intent
+// ============================================================
+// Online checkout (bKash / Nagad / Card): reserves the order WITHOUT writing it
+// to order-summary. No real order exists until /payments/:orderNo/confirm is
+// called — so an order is only ever confirmed once the customer actually pays.
+// ============================================================
+ordersRouter.post("/payments/intent", async (req, res, next) => {
+  try {
+    const who = resolveUser(req, res);
+    if (!who) return;
+
+    const built = buildOrderPayload({
+      userObjectId: who.userObjectId,
+      body: req.body || {},
+      userName: req.userData.name || "",
     });
+    if (built.errors) {
+      return res.status(400).json({ error: built.errors[0] });
+    }
+
+    const { orderDoc } = built;
+    const now = orderDoc.created_at;
+
+    const db = getDb();
+    const payments = db.collection("payment-intg");
+
+    // Drop any older pending intents for the same checkout payload/method so a
+    // retry always operates on the freshest session.
+    try {
+      await payments.deleteMany({
+        doc_type: "intent",
+        status: "pending",
+        user_id: who.userObjectId,
+        expires_at: { $lt: now },
+      });
+    } catch (e) {
+      console.warn("Failed to clean expired intents:", e.message);
+    }
+
+    const intent = {
+      doc_type: "intent",
+      // The payment-intg collection has a UNIQUE index on order_id, so intents
+      // (which have no real order yet) need a unique placeholder value.
+      order_id: new ObjectId(),
+      order_no: orderDoc.order_no,
+      tracking_id: orderDoc.tracking_id,
+      user_id: orderDoc.user_id,
+      order_doc: orderDoc,
+      method: orderDoc.payment_method,
+      currency: "BDT",
+      amount: orderDoc.total_amount,
+      status: "pending",
+      transaction_id: randomTxnId(),
+      gateway_response: {},
+      created_at: now,
+      expires_at: new Date(now.getTime() + INTENT_TTL_MS),
+    };
+
+    await payments.insertOne(intent);
+
+    res.status(201).json({ success: true, intent: toIntentJson(intent) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================================
+// GET /api/user/payments/:orderNo
+// ============================================================
+// Fetch the payment intent for the Stripe-style checkout page (items, totals,
+// method). Returns payment_status "Paid" once the order has been confirmed so
+// the page can forward already-paid orders to the invoice.
+// ============================================================
+ordersRouter.get("/payments/:orderNo", async (req, res, next) => {
+  try {
+    const who = resolveUser(req, res);
+    if (!who) return;
+
+    const orderNo = String(req.params.orderNo || "");
+    if (!orderNo) {
+      return res.status(400).json({ error: "Order id is required" });
+    }
+
+    const db = getDb();
+    const intent = await db.collection("payment-intg").findOne({
+      doc_type: "intent",
+      user_id: who.userObjectId,
+      order_no: orderNo,
+    });
+
+    if (!intent) {
+      return res.status(404).json({ error: "Payment intent not found" });
+    }
+
+    res.json({ success: true, order: toIntentJson(intent) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ============================================================
+// POST /api/user/payments/:orderNo/confirm
+// ============================================================
+// The final step after the customer taps "Pay now" on the secure checkout page.
+// Confirms the payment, writes the REAL order to order-summary (paid), and runs
+// all order side effects (stock, coupon usage, notifications). Without this
+// call the order is never created — Pay-button-less checkouts leave nothing.
+// ============================================================
+ordersRouter.post("/payments/:orderNo/confirm", async (req, res, next) => {
+  try {
+    const who = resolveUser(req, res);
+    if (!who) return;
+
+    const orderNo = String(req.params.orderNo || "");
+    if (!orderNo) {
+      return res.status(400).json({ error: "Order id is required" });
+    }
+
+    const db = getDb();
+    const payments = db.collection("payment-intg");
+
+    const intent = await payments.findOne({
+      doc_type: "intent",
+      user_id: who.userObjectId,
+      order_no: orderNo,
+    });
+    if (!intent) {
+      return res.status(404).json({ error: "Payment intent not found" });
+    }
+
+    // Already paid → return the existing order idempotently.
+    if (intent.status === "paid") {
+      const existing = await db
+        .collection("order-summary")
+        .findOne({ order_no: orderNo, user_id: who.userObjectId });
+      if (!existing) {
+        return res.status(404).json({ error: "Order not found" });
+      }
+      return res.json({
+        success: true,
+        alreadyPaid: true,
+        order: toOrderJson(existing),
+      });
+    }
+
+    // Expired sessions can't be paid anymore.
+    if (new Date(intent.expires_at) < new Date()) {
+      try {
+        await payments.updateOne(
+          { _id: intent._id },
+          { $set: { status: "expired", updated_at: new Date() } }
+        );
+      } catch (e) {
+        console.warn("Failed to mark intent expired:", e.message);
+      }
+      return res.status(400).json({
+        error: "Payment session expired. Please place your order again.",
+      });
+    }
+
+    const now = new Date();
+    const orderDoc = intent.order_doc;
+    orderDoc.payment_status = "Paid";
+    orderDoc.payment_date = now;
+    orderDoc.transaction_id = intent.transaction_id;
+    orderDoc.updated_at = now;
+
+    const orders = db.collection("order-summary");
+    const result = await orders.insertOne(orderDoc);
+
+    await runOrderSideEffects({
+      db,
+      orderDoc,
+      cleanItems: orderDoc.items,
+      appliedCoupon: orderDoc.coupon_code || null,
+      insertedId: result.insertedId,
+      userId: who.userId,
+      userName: orderDoc.delivery?.name || "",
+    });
+
+    try {
+      await payments.updateOne(
+        { _id: intent._id },
+        {
+          $set: {
+            status: "paid",
+            order_id: result.insertedId,
+            paid_at: now,
+            updated_at: now,
+          },
+        }
+      );
+    } catch (e) {
+      console.warn("Failed to update payment intent:", e.message);
+    }
+
+    orderDoc._id = result.insertedId;
+    res.json({ success: true, alreadyPaid: false, order: toOrderJson(orderDoc) });
   } catch (err) {
     next(err);
   }

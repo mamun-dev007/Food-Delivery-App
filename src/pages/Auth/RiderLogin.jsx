@@ -23,7 +23,13 @@ const RiderLogin = () => {
         role: ROLES.rider,
       });
 
-      if (user?.status === "active") {
+      if (user?.isVerified === false) {
+        toast.success("Logged in! Please verify your email.");
+        navigate("/verify-email", {
+          replace: true,
+          state: { email: identifier.trim().toLowerCase() },
+        });
+      } else if (user?.status === "active") {
         navigate("/");
       } else if (user?.status === "rejected") {
         toast.error("Your rider application was rejected.");
@@ -70,18 +76,9 @@ const RiderLogin = () => {
             </div>
 
             <div>
-              <div className="flex items-center justify-between">
-                <label className="label">
-                  <span className="label-text">Password</span>
-                </label>
-                <a
-                  href="#"
-                  onClick={(e) => e.preventDefault()}
-                  className="text-sm text-primary link link-primary"
-                >
-                  Forgot Password?
-                </a>
-              </div>
+              <label className="label">
+                <span className="label-text">Password</span>
+              </label>
               <div className="relative">
                 <Lock className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-base-content/40" />
                 <input
@@ -104,6 +101,18 @@ const RiderLogin = () => {
                     <Eye className="w-5 h-5" />
                   )}
                 </button>
+              </div>
+              <div className="flex justify-end mt-1">
+                <Link
+                  to="/forgot-password"
+                  state={{
+                    email: identifier.includes("@") ? identifier : "",
+                    from: "/rider/login",
+                  }}
+                  className="text-sm text-primary link link-primary"
+                >
+                  Forgot Password?
+                </Link>
               </div>
             </div>
 

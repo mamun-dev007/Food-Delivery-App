@@ -1,6 +1,8 @@
 import React from "react";
+import { useNavigate } from "react-router-dom";
 
 const Banner = ({ title, subtitle, image, gradient }) => {
+  const navigate = useNavigate();
   return (
     <div className="hero min-h-[420px] rounded-3xl overflow-hidden relative">
       <img
@@ -15,7 +17,7 @@ const Banner = ({ title, subtitle, image, gradient }) => {
             {title}
           </h1>
           <p className="mb-5 text-white/90 text-lg">{subtitle}</p>
-          <button className="btn btn-primary btn-lg shadow-lg">
+          <button onClick={() => navigate("/menu")} className="btn btn-primary btn-lg shadow-lg">
             Order Now
           </button>
         </div>

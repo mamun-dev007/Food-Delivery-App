@@ -30,6 +30,11 @@ export const RequireApprovedRestaurant = ({ children }) => {
     return <Navigate to="/" replace />;
   }
 
+  // Email not verified yet -> verification page.
+  if (user.isVerified === false) {
+    return <Navigate to="/verify-email" replace />;
+  }
+
   // Pending / rejected -> verification notice.
   if (user.status !== "active") {
     return <Navigate to="/restaurant-owner/verification" replace />;

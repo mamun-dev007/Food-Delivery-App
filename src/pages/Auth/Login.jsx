@@ -5,7 +5,6 @@ import toast from "react-hot-toast";
 import { useAuthStore } from "../../store/authStore";
 import {
   ROLES,
-  ROLE_DASHBOARD,
   ROLE_LABELS,
 } from "../../utils/roles";
 
@@ -51,7 +50,14 @@ const Login = ({ role: fixedRole }) => {
     try {
       const user = await login({ email, password, role });
       toast.success("Logged in!");
-      navigate(ROLE_DASHBOARD[user?.role] || "/");
+      if (user?.isVerified === false) {
+        navigate("/verify-email", {
+          replace: true,
+          state: { email: email.trim().toLowerCase() },
+        });
+      } else {
+        navigate("/", { replace: true });
+      }
     } catch (err) {
       toast.error(err?.message || err?.response?.data?.error || "Something went wrong");
     }
@@ -60,13 +66,13 @@ const Login = ({ role: fixedRole }) => {
   // One-click admin login using the hard-coded credentials.
   const handleAdminQuickLogin = async () => {
     try {
-      const user = await login({
+      await login({
         email: DEMO_ADMIN.email,
         password: DEMO_ADMIN.password,
         role: ROLES.admin,
       });
       toast.success("Logged in as Admin!");
-      navigate(ROLE_DASHBOARD[user?.role] || "/");
+      navigate("/", { replace: true });
     } catch (err) {
       toast.error(err?.message || "Admin login failed.");
     }
@@ -131,6 +137,15 @@ const Login = ({ role: fixedRole }) => {
                 onChange={(e) => setPassword(e.target.value)}
                 required
               />
+              <div className="flex justify-end mt-1">
+                <Link
+                  to="/forgot-password"
+                  state={{ email, from: "/auth" }}
+                  className="text-sm text-primary link link-primary"
+                >
+                  Forgot Password?
+                </Link>
+              </div>
             </div>
             <button className="btn btn-primary w-full" disabled={loading}>
               {loading ? "Please wait..." : "Login"}

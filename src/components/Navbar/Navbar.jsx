@@ -156,8 +156,8 @@ const Navbar = ({ children }) => {
               alt="Foodie"
               className="h-8 w-auto object-contain"
             />
-            <span className="text-primary font-extrabold text-xl">Foo</span>
-            <span className="text-secondary font-extrabold text-xl">die</span>
+            <span className="text-primary font-extrabold text-xl sm:block hidden">Foo</span>
+            <span className="text-secondary font-extrabold text-xl  sm:block hidden">die</span>
           </a>
         </div>
 
@@ -209,7 +209,7 @@ const Navbar = ({ children }) => {
 
           <button
             onClick={() => setShowSearch((v) => !v)}
-            className="btn btn-ghost"
+            className="btn btn-ghost hidden sm:block"
             aria-label="Search"
           >
             <Search className="w-5 h-5" />
@@ -217,13 +217,13 @@ const Navbar = ({ children }) => {
 
           {role === "customer" && (
             <>
-              <NavLink
+              {/* <NavLink
                 to="/favorites"
                 className="btn btn-ghost"
                 aria-label="Favorites"
               >
                 <Heart className="w-5 h-5" />
-              </NavLink>
+              </NavLink> */}
               <NavLink
                 to="/cart"
                 className="btn btn-ghost relative"
@@ -367,7 +367,7 @@ const Navbar = ({ children }) => {
                 setShowSearch(false);
                 setSearchQuery("");
               }}
-              className="absolute right-3 top-1/2 -translate-y-1/2 btn btn-ghost btn-xs"
+              className="absolute right-3 top-1/2 -translate-y-1/2 btn btn-ghost btn-xs "
             >
               <X className="w-4 h-4" />
             </button>

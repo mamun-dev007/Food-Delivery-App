@@ -4,11 +4,23 @@
 // verification on the backend). This service sends the Firebase ID token to
 // the backend, which verifies it and returns the REAL user profile/role from
 // MongoDB.
+//
+// Registration is STEP-WISE and STATELESS:
+//   1. signupUser(...)      — validate the payload & email a verification OTP.
+//                              Nothing is created on Firebase or MongoDB yet;
+//                              the backend returns a short-lived signed
+//                              `verificationToken` (signup session).
+//   2. verifyEmail(...)     — proves the OTP; ONLY then does the backend create
+//                              the Firebase user + MongoDB profile (isVerified:
+//                              true) and return a Firebase custom token.
+//   3. signInWithSignupToken — finishes the session using that custom token.
+// An unverified email leaves no record anywhere, so it can be signed up again.
 
 import {
-  createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
+  signInWithCustomToken,
   signOut,
+  sendPasswordResetEmail,
   getAuth,
 } from "firebase/auth";
 import { app } from "../firebase/config";
@@ -38,10 +50,11 @@ function errorMessage(err, fallback) {
 }
 
 /**
- * Sign up a new user.
- * - Creates the account in Firebase Authentication.
- * - Sends the ID token + role/details to the backend, which stores the user
- *   in MongoDB and assigns the role.
+ * Sign up a new user (STEP 1 of registration).
+ * - Backend validates, emails a 6-digit OTP and returns a signed
+ *   `verificationToken` — NO account (Firebase or MongoDB) is created yet and
+ *   nothing is stored server-side, so the email can be used again if the OTP
+ *   is never verified.
  * The role must be a public signup role; admin is never assignable through
  * signup (enforced on the backend too).
  */
@@ -49,15 +62,10 @@ export async function signupUser(data, setLoading) {
   try {
     if (setLoading) setLoading(true);
 
-    const credential = await createUserWithEmailAndPassword(
-      auth,
-      data.email,
-      data.password
-    );
-    const idToken = await credential.user.getIdToken();
-
     const {
       name,
+      email,
+      password,
       role,
       phone,
       deliveryAddress,
@@ -82,9 +90,9 @@ export async function signupUser(data, setLoading) {
       paymentMethod,
     } = data;
     const { data: res } = await apiClient.post("/api/auth/signup", {
-      idToken,
       name,
-      email: data.email,
+      email,
+      password,
       role,
       phone,
       deliveryAddress,
@@ -113,6 +121,43 @@ export async function signupUser(data, setLoading) {
     throw new Error(errorMessage(err));
   } finally {
     if (setLoading) setLoading(false);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stateless signup session (verificationToken + email) kept in sessionStorage.
+// The token is the ONLY thing that lets /verify-email and /resend-verification
+// identify the pending signup — nothing exists on the server yet.
+// ---------------------------------------------------------------------------
+export const SIGNUP_TOKEN_KEY = "mamun_signup_token";
+export const SIGNUP_EMAIL_KEY = "mamun_signup_email";
+
+export function saveSignupSession({ email, verificationToken }) {
+  try {
+    if (verificationToken) sessionStorage.setItem(SIGNUP_TOKEN_KEY, verificationToken);
+    if (email) sessionStorage.setItem(SIGNUP_EMAIL_KEY, email.toLowerCase());
+  } catch {
+    // sessionStorage unavailable — the token still travels via location state.
+  }
+}
+
+export function readSignupSession() {
+  try {
+    return {
+      email: String(sessionStorage.getItem(SIGNUP_EMAIL_KEY) || "").toLowerCase(),
+      verificationToken: sessionStorage.getItem(SIGNUP_TOKEN_KEY) || "",
+    };
+  } catch {
+    return { email: "", verificationToken: "" };
+  }
+}
+
+export function clearSignupSession() {
+  try {
+    sessionStorage.removeItem(SIGNUP_TOKEN_KEY);
+    sessionStorage.removeItem(SIGNUP_EMAIL_KEY);
+  } catch {
+    // best effort
   }
 }
 
@@ -185,6 +230,82 @@ export async function updateProfile({ name, avatar_url, phone, theme }) {
     return data;
   } catch (err) {
     throw new Error(errorMessage(err, "Failed to update profile."));
+  }
+}
+
+/**
+ * Verify the user's email with the 6-digit OTP they received (STEP 2 of
+ * registration). Requires the `verificationToken` from signup. ONLY on success
+ * does the backend create the real account and return a Firebase custom token.
+ * If the code was wrong, the backend re-signs the token (attempt counter) and
+ * returns it in the error body so the UI can keep the session in sync.
+ * @param {{ email: string, otp: string, verificationToken: string }} data
+ */
+export async function verifyEmail({ email, otp, verificationToken }) {
+  try {
+    const { data } = await apiClient.post("/api/auth/verify-email", {
+      email,
+      otp,
+      verificationToken,
+    });
+    return data;
+  } catch (err) {
+    const e = new Error(errorMessage(err, "Verification failed."));
+    e.verificationToken = err?.response?.data?.verificationToken || "";
+    throw e;
+  }
+}
+
+/**
+ * Resend a fresh 6-digit OTP for the unverified signup (60-second cooldown).
+ * Returns a NEW `verificationToken` that must replace the previous one.
+ * The server's retryAfterMs (if any) is attached to the thrown error
+ * so the UI can start an accurate countdown.
+ * @param {{ email: string, verificationToken: string }} data
+ */
+export async function resendVerification({ email, verificationToken }) {
+  try {
+    const { data } = await apiClient.post(
+      "/api/auth/resend-verification",
+      { email, verificationToken },
+    );
+    return data;
+  } catch (err) {
+    const e = new Error(errorMessage(err, "Could not resend the code."));
+    e.retryAfterMs = err?.response?.data?.retryAfterMs || 0;
+    throw e;
+  }
+}
+
+/**
+ * Finish the registration session by signing in with the Firebase custom token
+ * returned by /verify-email. This creates the Firebase auth session immediately
+ * after the account is created, so the onAuthStateChanged listener can restore
+ * the real profile via /api/auth/me.
+ */
+export async function signInWithSignupToken(customToken) {
+  const credential = await signInWithCustomToken(auth, customToken);
+  return credential.user;
+}
+
+/**
+ * Send a password-reset email via Firebase Authentication.
+ * Firebase sends the reset link directly (no SMTP credentials needed server-side).
+ * @param {{ email: string }} data
+ */
+export async function resetPassword({ email }) {
+  try {
+    await sendPasswordResetEmail(auth, email.trim().toLowerCase());
+    return { success: true };
+  } catch (err) {
+    const map = {
+      "auth/email-not-found": "No account found with this email.",
+      "auth/user-not-found": "No account found with this email.",
+      "auth/invalid-email": "Invalid email address.",
+      "auth/missing-email": "Please enter your email address.",
+      "auth/too-many-requests": "Too many attempts. Please try again later.",
+    };
+    throw new Error(map[err?.code] || "Could not send the reset link. Please try again.");
   }
 }
 

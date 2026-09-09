@@ -17,7 +17,9 @@ import {
 import toast from "react-hot-toast";
 import { useAuthStore } from "../../store/authStore";
 import { uploadProfilePhoto } from "../../services/storageService";
-import { ROLES, ROLE_DASHBOARD } from "../../utils/roles";
+import { saveSignupSession } from "../../services/authService";
+import { ROLES } from "../../utils/roles";
+import { onlyDigits, validatePhone } from "../../utils/phone";
 
 const CUISINES = [
   "Bengali",
@@ -157,12 +159,44 @@ const RestaurantOwnerSignup = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!name.trim()) {
+      toast.error("Please enter the owner's full name.");
+      return;
+    }
+    if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      toast.error("Please enter a valid email address.");
+      return;
+    }
+    const phoneErr = validatePhone(phone);
+    if (phoneErr) {
+      toast.error(phoneErr);
+      return;
+    }
+    if (restaurantPhone.trim()) {
+      const restPhoneErr = validatePhone(restaurantPhone);
+      if (restPhoneErr) {
+        toast.error(`Restaurant phone: ${restPhoneErr}`);
+        return;
+      }
+    }
     if (password.length < 6) {
       toast.error("Password must be at least 6 characters.");
       return;
     }
     if (password !== confirm) {
       toast.error("Passwords do not match.");
+      return;
+    }
+    if (!restaurantName.trim()) {
+      toast.error("Please enter the restaurant name.");
+      return;
+    }
+    if (!restaurantAddress.trim()) {
+      toast.error("Please enter the restaurant address.");
+      return;
+    }
+    if (!city.trim() || !area.trim()) {
+      toast.error("Please enter the city and area.");
       return;
     }
     if (!agree) {
@@ -177,16 +211,16 @@ const RestaurantOwnerSignup = () => {
         upload(cover),
       ]);
 
-      const user = await signup({
-        name,
+      const res = await signup({
+        name: name.trim(),
         email,
-        phone,
+        phone: onlyDigits(phone),
         password,
         role: ROLES.restaurantOwner,
         avatar_url,
         termsAccepted: true,
         restaurantName,
-        restaurantPhone,
+        restaurantPhone: onlyDigits(restaurantPhone),
         restaurantEmail,
         restaurantAddress,
         city,
@@ -200,12 +234,21 @@ const RestaurantOwnerSignup = () => {
         closingTime,
         deliveryAvailable,
       });
-      toast.success("Account created! We'll review your restaurant soon.");
-      if (user?.status === "active") {
-        navigate(ROLE_DASHBOARD[user.role]);
-      } else {
-        navigate("/restaurant-owner/verification");
-      }
+      saveSignupSession({
+        email: email.trim().toLowerCase(),
+        verificationToken: res?.verificationToken,
+      });
+      toast.success(
+        "We sent a 6-digit code to your email. Verify it to register your restaurant."
+      );
+      navigate("/verify-email", {
+        replace: true,
+        state: {
+          email: email.trim().toLowerCase(),
+          verificationToken: res?.verificationToken,
+          fromSignup: true,
+        },
+      });
     } catch (err) {
       toast.error(err?.message || "Something went wrong");
     }
@@ -282,9 +325,15 @@ const RestaurantOwnerSignup = () => {
                     label="Phone Number"
                     icon={Phone}
                     type="tel"
+                    inputMode="numeric"
                     placeholder="+8801XXXXXXXXX"
+                    maxLength={11}
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
+                    onChange={(e) => setPhone(onlyDigits(e.target.value))}
+                    onPaste={(e) => {
+                      e.preventDefault();
+                      setPhone(onlyDigits(e.clipboardData.getData("text")));
+                    }}
                     required
                   />
                 </div>
@@ -325,9 +374,16 @@ const RestaurantOwnerSignup = () => {
                   <Field
                     label="Restaurant Phone"
                     icon={Phone}
+                    type="tel"
+                    inputMode="numeric"
                     placeholder="+8801XXXXXXXXX"
+                    maxLength={11}
                     value={restaurantPhone}
-                    onChange={(e) => setRestaurantPhone(e.target.value)}
+                    onChange={(e) => setRestaurantPhone(onlyDigits(e.target.value))}
+                    onPaste={(e) => {
+                      e.preventDefault();
+                      setRestaurantPhone(onlyDigits(e.clipboardData.getData("text")));
+                    }}
                   />
                   <Field
                     label="Restaurant Email"

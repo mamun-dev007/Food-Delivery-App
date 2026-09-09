@@ -4,7 +4,7 @@ import { ArrowLeft, MapPin, Plus, Trash2, Loader2, Ticket, X } from "lucide-reac
 import toast from "react-hot-toast";
 import { useCartStore } from "../../store/cartStore";
 import { useAuthStore } from "../../store/authStore";
-import { createOrder } from "../../services/orderService";
+import { createOrder, createPaymentIntent } from "../../services/orderService";
 import { validateCoupon } from "../../services/couponService";
 
 const PAYMENT_METHODS = [
@@ -214,6 +214,17 @@ const Checkout = () => {
 
     setPlacing(true);
     try {
+      // bKash / Nagad / Card → reserve a payment intent first. NO real order is
+      // created until the customer taps "Pay now" on the secure checkout page.
+      // The cart stays intact so the customer can go back from the payment page.
+      if (form.payment !== "Cash on Delivery") {
+        const intent = await createPaymentIntent(payload);
+        toast.success("Order reserved — complete payment to confirm. 🔒");
+        navigate(`/payment/${intent.order_no}`);
+        return;
+      }
+
+      // Cash on Delivery → order takes effect immediately.
       const order = await createOrder(payload);
       clearCart();
       toast.success("Order placed successfully! 🎉");
@@ -456,10 +467,9 @@ const Checkout = () => {
             </div>
             <div className="alert alert-info mt-4 text-sm">
               <span>
-                Online payment status:{" "}
-                <span className="font-semibold">Pending</span> — marked "Paid"
-                after confirmation for online methods, or on delivery for Cash on
-                Delivery.
+                Online methods (bKash / Nagad / Card) will open a secure payment
+                page after placing the order. Cash on Delivery is paid when your
+                food arrives.
               </span>
             </div>
           </section>

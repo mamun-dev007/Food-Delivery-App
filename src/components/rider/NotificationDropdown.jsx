@@ -17,7 +17,7 @@ const NotificationDropdown = ({ items = [] }) => {
   const navigate = useNavigate();
 
   return (
-    <div className="absolute right-0 top-full z-50 mt-2 w-[340px] max-w-[calc(100vw-1.5rem)] overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-xl">
+    <div className="w-[340px] max-w-[calc(100vw-1.5rem)] max-sm:w-full overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-xl sm:mt-2">
       <div className="flex items-center justify-between border-b border-base-300 bg-base-200/50 px-4 py-3">
         <p className="flex items-center gap-2 text-sm font-bold text-base-content">
           <Bell className="h-4 w-4 text-primary" /> Notifications

@@ -29,6 +29,53 @@ const RIDER_STATUS_FLOW = [
   "Delivered",
 ];
 
+// ============================================================
+// Asia/Dhaka (UTC+6, no DST) day-boundary helpers
+// ============================================================
+// Stored timestamps are UTC. The app's business day is Dhaka time,
+// so "today / this week / this month" buckets are computed against a
+// +6h-shifted clock instead of the server's (often UTC) local time.
+const TZ_OFFSET_MS = 6 * 60 * 60 * 1000;
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+const dhakaParts = (d) => {
+  const t = new Date(Number(d) + TZ_OFFSET_MS);
+  return {
+    year: t.getUTCFullYear(),
+    month: t.getUTCMonth(),
+    date: t.getUTCDate(),
+    day: t.getUTCDay(),
+  };
+};
+
+const dhakaDayKey = (d) => {
+  const p = dhakaParts(d);
+  return `${p.year}-${String(p.month + 1).padStart(2, "0")}-${String(p.date).padStart(2, "0")}`;
+};
+
+const dhakaMonthKey = (d) => {
+  const p = dhakaParts(d);
+  return `${p.year}-${String(p.month + 1).padStart(2, "0")}`;
+};
+
+const dhakaWeekdayLabel = (d) => WEEKDAYS[dhakaParts(d).day].slice(0, 3);
+
+// Start boundary (as a UTC Date) of the Dhaka day/week/month/year that now falls in.
+const dhakaStartOfDay = (now) => {
+  const t = new Date(Number(now) + TZ_OFFSET_MS);
+  t.setUTCHours(0, 0, 0, 0);
+  return new Date(t.getTime() - TZ_OFFSET_MS);
+};
+const dhakaStartOfWeek = (now) => new Date(dhakaStartOfDay(now).getTime() - dhakaParts(now).day * 86400000);
+const dhakaStartOfMonth = (now) => {
+  const p = dhakaParts(now);
+  return new Date(Date.UTC(p.year, p.month, 1) - TZ_OFFSET_MS);
+};
+const dhakaStartOfYear = (now) => {
+  const p = dhakaParts(now);
+  return new Date(Date.UTC(p.year, 0, 1) - TZ_OFFSET_MS);
+};
+
 // Deterministic, stable pseudo-coordinates/distance derived from the order
 // number so the rider UI can offer turn-by-turn navigation without stored
 // geo coordinates (the real DB has no lat/lng on orders today).
@@ -352,38 +399,34 @@ riderRouter.get("/earnings", async (req, res, next) => {
       .toArray();
 
     const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const startOfWeek = new Date(startOfToday);
-    startOfWeek.setDate(startOfWeek.getDate() - now.getDay());
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    const startOfYear = new Date(now.getFullYear(), 0, 1);
-
-    const dayKey = (d) =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-        d.getDate(),
-      ).padStart(2, "0")}`;
+    const startOfToday = dhakaStartOfDay(now);
+    const startOfWeek = dhakaStartOfWeek(now);
+    const startOfMonth = dhakaStartOfMonth(now);
+    const startOfYear = dhakaStartOfYear(now);
 
     const buckets = { today: 0, week: 0, month: 0, year: 0 };
     const byDay = {};
     for (const o of docs) {
-      const created = o.created_at ? new Date(o.created_at) : null;
+      // Earnings are credited when the order is completed (Delivered), so bucket
+      // by completion time — fall back to updated_at, then created_at.
+      const raw = o.completed_at || o.updated_at || o.created_at;
+      const created = raw ? new Date(raw) : null;
       if (!created || Number.isNaN(created.getTime())) continue;
       const fee = Number(o.delivery_fee || 0);
       buckets.year += fee;
       if (created >= startOfMonth) buckets.month += fee;
       if (created >= startOfWeek) buckets.week += fee;
       if (created >= startOfToday) buckets.today += fee;
-      const k = dayKey(created);
+      const k = dhakaDayKey(created);
       byDay[k] = (byDay[k] || 0) + fee;
     }
 
     const weekly = [];
     for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const k = dayKey(d);
+      const d = new Date(Date.now() - i * 86400000);
+      const k = dhakaDayKey(d);
       weekly.push({
-        day: d.toLocaleDateString(undefined, { weekday: "long" }).slice(0, 3),
+        day: dhakaWeekdayLabel(d),
         earnings: Math.round((byDay[k] || 0) * 100) / 100,
       });
     }
@@ -436,12 +479,9 @@ riderRouter.get("/earnings", async (req, res, next) => {
 // GET /api/rider/overview
 // ============================================================
 // Stat cards + active delivery for the rider dashboard.
+// True when a and b fall on the same Asia/Dhaka calendar day.
 function sameDay(a, b) {
-  return (
-    a.getFullYear() === b.getFullYear() &&
-    a.getMonth() === b.getMonth() &&
-    a.getDate() === b.getDate()
-  );
+  return dhakaDayKey(a) === dhakaDayKey(b);
 }
 
 riderRouter.get("/overview", async (req, res, next) => {
@@ -539,20 +579,15 @@ riderRouter.get("/performance", async (req, res, next) => {
       .limit(1000)
       .toArray();
 
-    const dayKey = (d) =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-        d.getDate(),
-      ).padStart(2, "0")}`;
-    const monthKey = (d) =>
-      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-
     const byDay = {};
     const byMonth = {};
     for (const o of docs) {
-      const created = o.created_at ? new Date(o.created_at) : null;
+      // Bucket by completion time when available (echoes /earnings behaviour).
+      const raw = o.completed_at || o.updated_at || o.created_at;
+      const created = raw ? new Date(raw) : null;
       if (!created || Number.isNaN(created.getTime())) continue;
-      const keyDay = dayKey(created);
-      const keyMonth = monthKey(created);
+      const keyDay = dhakaDayKey(created);
+      const keyMonth = dhakaMonthKey(created);
       const fee = Number(o.delivery_fee || 0);
       byDay[keyDay] = byDay[keyDay] || { deliveries: 0, earnings: 0 };
       byDay[keyDay].deliveries += 1;
@@ -564,11 +599,10 @@ riderRouter.get("/performance", async (req, res, next) => {
 
     const weekly = [];
     for (let i = 6; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const k = dayKey(d);
+      const d = new Date(Date.now() - i * 86400000);
+      const k = dhakaDayKey(d);
       weekly.push({
-        day: d.toLocaleDateString(undefined, { weekday: "short" }),
+        day: dhakaWeekdayLabel(d),
         deliveries: byDay[k]?.deliveries || 0,
         earnings: Math.round((byDay[k]?.earnings || 0) * 100) / 100,
       });
@@ -576,12 +610,13 @@ riderRouter.get("/performance", async (req, res, next) => {
 
     const monthly = [];
     for (let i = 5; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(1);
-      d.setMonth(d.getMonth() - i);
-      const k = monthKey(d);
+      const now = new Date();
+      const p = dhakaParts(now);
+      const d = new Date(Date.UTC(p.year, p.month - i, 1));
+      const k = dhakaMonthKey(d);
+      const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
       monthly.push({
-        month: d.toLocaleDateString(undefined, { month: "short" }),
+        month: MONTHS[d.getUTCMonth()],
         deliveries: byMonth[k]?.deliveries || 0,
         earnings: Math.round((byMonth[k]?.earnings || 0) * 100) / 100,
       });

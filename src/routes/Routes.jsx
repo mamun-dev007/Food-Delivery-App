@@ -15,6 +15,7 @@ import Checkout from '../pages/Checkout/Checkout';
 import TrackOrder from '../pages/TrackOrder/TrackOrder';
 import MyOrders from '../pages/MyOrders/MyOrders';
 import Invoice from '../pages/Invoice/Invoice';
+import Payment from '../pages/Payment/Payment';
 import Reviews from '../pages/Reviews/Reviews';
 import Profile from '../pages/Profile/Profile';
 import Login from '../pages/Auth/Login';
@@ -27,6 +28,8 @@ import RestaurantVerification from '../pages/Auth/RestaurantVerification';
 import RiderLogin from '../pages/Auth/RiderLogin';
 import RiderSignup from '../pages/Auth/RiderSignup';
 import RiderVerification from '../pages/Auth/RiderVerification';
+import VerifyEmail from '../pages/Auth/VerifyEmail';
+import ForgotPassword from '../pages/Auth/ForgotPassword';
 import Unauthorized from '../pages/Unauthorized/Unauthorized';
 import AddFood from '../pages/Restaurant/Foods/AddFood';
 import Manage from '../pages/Restaurant/Manage/Manage';
@@ -169,6 +172,14 @@ export const router = createBrowserRouter([
           </RequireCustomer>
         ),
       },
+      {
+        path: '/payment/:orderId',
+        element: (
+          <RequireCustomer>
+            <Payment />
+          </RequireCustomer>
+        ),
+      },
       { path: '/reviews', Component: Reviews },
       { path: '/profile', Component: Profile },
 
@@ -177,6 +188,12 @@ export const router = createBrowserRouter([
       { path: '/login', Component: CustomerLogin },
       { path: '/signup', Component: CustomerSignup },
       { path: '/customer/login', element: <CustomerLogin /> },
+      // Email verification (reached after signup, after an unverified login,
+      // or directly with ?email=... in the URL).
+      { path: '/verify-email', Component: VerifyEmail },
+
+      // Password reset (Firebase sends the reset link by email).
+      { path: '/forgot-password', Component: ForgotPassword },
       { path: '/unauthorized', Component: Unauthorized },
 
       // Restaurant-owner auth (detailed signup + login + verification notice).

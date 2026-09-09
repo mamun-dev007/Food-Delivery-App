@@ -64,10 +64,14 @@ const FoodCard = ({ food }) => {
   const finalPrice = effectivePrice(price, discount);
   const badge = getBadge(food);
   const deliveryTime = getDeliveryTime(food);
+  const soldOut =
+    food.is_available === false ||
+    (food.stock != null && Number(food.stock) <= 0);
 
   const handleAdd = (e) => {
     e.preventDefault();
     e.stopPropagation();
+    if (soldOut) return;
     addToCart(food);
   };
 
@@ -100,9 +104,16 @@ const FoodCard = ({ food }) => {
           src={food.image}
           alt={food.name}
           loading="lazy"
-          className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+          className={`h-full w-full object-cover transition-transform duration-500 group-hover:scale-105 ${soldOut ? "opacity-50" : ""}`}
         />
-        {badge && (
+        {soldOut && (
+          <span className="absolute inset-0 flex items-center justify-center bg-black/40">
+            <span className="rounded-full bg-black/70 px-4 py-1.5 text-xs font-bold text-white">
+              Out of stock
+            </span>
+          </span>
+        )}
+        {badge && !soldOut && (
           <span
             className={`absolute top-3 left-3 rounded-full ${badge.cls} px-3 py-1 text-xs font-semibold text-white shadow-sm`}
           >
@@ -181,11 +192,20 @@ const FoodCard = ({ food }) => {
           <button
             type="button"
             onClick={handleAdd}
-            aria-label={`Add ${food.name} to cart`}
-            className="flex items-center gap-1.5 rounded-xl bg-purple-600 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-purple-700"
+            aria-label={
+              soldOut
+                ? `${food.name} is out of stock`
+                : `Add ${food.name} to cart`
+            }
+            disabled={soldOut}
+            className={`flex items-center gap-1.5 rounded-xl px-3.5 py-2 text-sm font-semibold shadow-sm transition-colors ${
+              soldOut
+                ? "cursor-not-allowed bg-base-200 text-base-content/40"
+                : "bg-purple-600 text-white hover:bg-purple-700"
+            }`}
           >
             <ShoppingCart className="h-4 w-4" />
-            Add
+            {soldOut ? "Out of stock" : "Add"}
           </button>
         </div>
       </div>

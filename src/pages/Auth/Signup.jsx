@@ -3,7 +3,9 @@ import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, User, Store, Bike } from "lucide-react";
 import toast from "react-hot-toast";
 import { useAuthStore } from "../../store/authStore";
-import { ROLES, ROLE_DASHBOARD, PUBLIC_SIGNUP_ROLES } from "../../utils/roles";
+import { saveSignupSession } from "../../services/authService";
+import { ROLES, PUBLIC_SIGNUP_ROLES } from "../../utils/roles";
+import { onlyDigits, validatePhone } from "../../utils/phone";
 
 const ROLES_META = [
   { id: ROLES.customer, label: "Customer", icon: User },
@@ -41,19 +43,52 @@ const Signup = () => {
       return;
     }
 
-    const payload = { name, email, password, role };
+    if (!name.trim()) {
+      toast.error("Please enter your full name.");
+      return;
+    }
+    if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      toast.error("Please enter a valid email address.");
+      return;
+    }
+    if (role === ROLES.customer) {
+      const phoneErr = validatePhone(phone);
+      if (phoneErr) {
+        toast.error(phoneErr);
+        return;
+      }
+    }
+    if (password.length < 6) {
+      toast.error("Password must be at least 6 characters.");
+      return;
+    }
+
+    const payload = { name: name.trim(), email, password, role };
 
     if (role === ROLES.customer) {
-      Object.assign(payload, { phone, district, street, houseNo });
+      Object.assign(payload, { phone: onlyDigits(phone), district, street, houseNo });
     }
     if (role === ROLES.restaurantOwner) {
       payload.restaurantName = restaurantName;
     }
 
     try {
-      const user = await signup(payload);
-      toast.success("Account created!");
-      navigate(ROLE_DASHBOARD[user?.role] || ROLE_DASHBOARD[role] || "/");
+      const res = await signup(payload);
+      saveSignupSession({
+        email: email.trim().toLowerCase(),
+        verificationToken: res?.verificationToken,
+      });
+      toast.success(
+        "We sent a 6-digit code to your email. Verify it to activate your account."
+      );
+      navigate("/verify-email", {
+        replace: true,
+        state: {
+          email: email.trim().toLowerCase(),
+          verificationToken: res?.verificationToken,
+          fromSignup: true,
+        },
+      });
     } catch (err) {
       toast.error(err?.message || "Something went wrong");
     }
@@ -157,10 +192,16 @@ const Signup = () => {
                   </label>
                   <input
                     type="tel"
+                    inputMode="numeric"
                     className="input input-bordered w-full"
                     placeholder="+8801XXXXXXXXX"
+                    maxLength={11}
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
+                    onChange={(e) => setPhone(onlyDigits(e.target.value))}
+                    onPaste={(e) => {
+                      e.preventDefault();
+                      setPhone(onlyDigits(e.clipboardData.getData("text")));
+                    }}
                   />
                 </div>
                 <div>

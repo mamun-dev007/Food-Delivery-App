@@ -76,6 +76,7 @@ const toCardShape = (db) => ({
   discount: Number(db.discount || 0),
   ingredients: db.ingredients || [],
   stock: Number(db.stock || 0),
+  is_available: db.is_available != null ? !!db.is_available : true,
   reviewCount: Math.max(Number(db.review_count || 0), 0),
   deliveryTime: db.delivery_time || "",
   restaurant: {
@@ -190,6 +191,10 @@ const FoodDetails = () => {
 
   const foodId = food?.id;
   const isFavorite = favorites.some((f) => f.id === foodId);
+  const soldOut =
+    !!food &&
+    (food.is_available === false ||
+      (food.stock != null && Number(food.stock) <= 0));
   const badge = useMemo(() => (food ? getBadge(food) : null), [food]);
   const oldPrice =
     food && food.discount > 0 ? Number(food.price || 0) : null;
@@ -201,11 +206,12 @@ const FoodDetails = () => {
   };
 
   const handleAdd = () => {
-    if (food) addToCart(food, 1);
+    if (!food || soldOut) return;
+    addToCart(food, 1);
   };
 
   const handleBuyNow = () => {
-    if (!food) return;
+    if (!food || soldOut) return;
     const ok = addToCart(food, 1);
     if (ok) navigate("/checkout");
   };
@@ -393,7 +399,7 @@ const FoodDetails = () => {
                 </span>
               )}
             </div>
-            {food.stock > 0 ? (
+            {!soldOut ? (
               <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-600 dark:bg-emerald-500/10">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                 Only {food.stock} left in stock
@@ -408,7 +414,7 @@ const FoodDetails = () => {
               <button
                 type="button"
                 onClick={handleAdd}
-                disabled={food.stock <= 0}
+                disabled={soldOut}
                 className="flex items-center gap-2 rounded-xl bg-purple-600 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <ShoppingCart className="h-4 w-4" />
@@ -417,7 +423,7 @@ const FoodDetails = () => {
               <button
                 type="button"
                 onClick={handleBuyNow}
-                disabled={food.stock <= 0}
+                disabled={soldOut}
                 className="flex items-center gap-2 rounded-xl border-2 border-purple-600 bg-white px-5 py-2.5 text-sm font-semibold text-purple-600 transition-colors hover:bg-purple-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Zap className="h-4 w-4" />
@@ -577,7 +583,7 @@ const FoodDetails = () => {
       <div className="sticky bottom-4 z-30 md:hidden">
         <div className="flex items-center gap-3 rounded-2xl border border-base-200 bg-white p-3 shadow-xl">
           <div className="flex items-center gap-1.5 pl-1">
-            {food.stock > 0 ? (
+            {!soldOut ? (
               <>
                 <span className="h-2 w-2 rounded-full bg-emerald-500" />
                 <span className="text-xs font-medium text-emerald-600">
@@ -591,7 +597,7 @@ const FoodDetails = () => {
           <button
             type="button"
             onClick={handleAdd}
-            disabled={food.stock <= 0}
+            disabled={soldOut}
             className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-purple-600 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-60"
           >
             <ShoppingCart className="h-4 w-4" />

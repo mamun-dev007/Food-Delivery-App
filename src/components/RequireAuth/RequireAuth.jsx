@@ -42,6 +42,11 @@ export const RequireAuth = ({ allowedRoles, children }) => {
     return <Navigate to="/auth" replace state={{ from: location }} />;
   }
 
+  // Email not verified yet -> send them to the verification page.
+  if (user.isVerified === false) {
+    return <Navigate to="/verify-email" replace />;
+  }
+
   // Logged in but not allowed on this page -> own dashboard.
   if (allowedRoles && allowedRoles.length > 0 && !allowedRoles.includes(role)) {
     return <Navigate to={ROLE_DASHBOARD[role] || "/"} replace />;

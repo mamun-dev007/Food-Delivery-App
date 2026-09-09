@@ -17,7 +17,9 @@ import {
 import toast from "react-hot-toast";
 import { useAuthStore } from "../../store/authStore";
 import { uploadProfilePhoto } from "../../services/storageService";
-import { ROLES, ROLE_DASHBOARD } from "../../utils/roles";
+import { saveSignupSession } from "../../services/authService";
+import { ROLES } from "../../utils/roles";
+import { onlyDigits, validatePhone } from "../../utils/phone";
 
 const VEHICLE_TYPES = ["Bicycle", "Motorcycle", "Scooter", "Other"];
 
@@ -93,6 +95,19 @@ const RiderSignup = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!name.trim()) {
+      toast.error("Please enter your full name.");
+      return;
+    }
+    if (!email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      toast.error("Please enter a valid email address.");
+      return;
+    }
+    const phoneErr = validatePhone(phone);
+    if (phoneErr) {
+      toast.error(phoneErr);
+      return;
+    }
     if (password.length < 6) {
       toast.error("Password must be at least 6 characters.");
       return;
@@ -109,10 +124,10 @@ const RiderSignup = () => {
     try {
       const avatar_url = avatar ? await uploadProfilePhoto(avatar) : "";
 
-      const user = await signup({
-        name,
+      const res = await signup({
+        name: name.trim(),
         email,
-        phone,
+        phone: onlyDigits(phone),
         password,
         role: ROLES.rider,
         avatar_url,
@@ -125,12 +140,21 @@ const RiderSignup = () => {
         paymentMethod,
         termsAccepted: true,
       });
-      toast.success("Application submitted! We'll review your profile soon.");
-      if (user?.status === "active") {
-        navigate(ROLE_DASHBOARD[user.role]);
-      } else {
-        navigate("/rider/verification");
-      }
+      saveSignupSession({
+        email: email.trim().toLowerCase(),
+        verificationToken: res?.verificationToken,
+      });
+      toast.success(
+        "We sent a 6-digit code to your email. Verify it to submit your application."
+      );
+      navigate("/verify-email", {
+        replace: true,
+        state: {
+          email: email.trim().toLowerCase(),
+          verificationToken: res?.verificationToken,
+          fromSignup: true,
+        },
+      });
     } catch (err) {
       toast.error(err?.message || "Something went wrong");
     }
@@ -207,9 +231,15 @@ const RiderSignup = () => {
                     label="Phone Number"
                     icon={Phone}
                     type="tel"
+                    inputMode="numeric"
                     placeholder="+8801XXXXXXXXX"
+                    maxLength={11}
                     value={phone}
-                    onChange={(e) => setPhone(e.target.value)}
+                    onChange={(e) => setPhone(onlyDigits(e.target.value))}
+                    onPaste={(e) => {
+                      e.preventDefault();
+                      setPhone(onlyDigits(e.clipboardData.getData("text")));
+                    }}
                     required
                   />
                 </div>

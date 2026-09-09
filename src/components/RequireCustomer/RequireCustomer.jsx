@@ -36,6 +36,11 @@ export const RequireCustomer = ({ children }) => {
     );
   }
 
+  // Email not verified yet -> verification page.
+  if (user.isVerified === false) {
+    return <Navigate to="/verify-email" replace />;
+  }
+
   // Logged in but not a customer -> redirect to the user's own dashboard.
   if (role !== ROLES.customer) {
     return <Navigate to={ROLE_DASHBOARD[role] || "/"} replace />;

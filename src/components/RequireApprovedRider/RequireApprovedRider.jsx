@@ -28,6 +28,10 @@ export const RequireApprovedRider = ({ children }) => {
     return <Navigate to="/" replace />;
   }
 
+  if (user.isVerified === false) {
+    return <Navigate to="/verify-email" replace />;
+  }
+
   if (user.status !== "active") {
     return <Navigate to="/rider/verification" replace />;
   }

@@ -122,6 +122,16 @@ export const verifyRole =
         return res.status(403).json({ error: "Your account is inactive." });
       }
 
+      // Email verification gate. Only accounts explicitly created as
+      // isVerified: false are blocked — pre-existing accounts (no field) keep
+      // working exactly as before.
+      if (user.isVerified === false) {
+        return res.status(403).json({
+          error: "Please verify your email address to continue.",
+          code: "EMAIL_NOT_VERIFIED",
+        });
+      }
+
       const role = user.role;
       if (!allowedRoles.includes(role)) {
         return res.status(403).json({

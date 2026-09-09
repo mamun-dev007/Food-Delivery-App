@@ -85,7 +85,7 @@ const RiderNavbar = ({
               )}
             </button>
             {openMenu === "bell" && (
-              <div className="absolute left-auto right-0">
+              <div className="z-50 max-sm:fixed max-sm:inset-x-3 max-sm:top-14 sm:absolute sm:left-auto sm:right-0 sm:max-w-[calc(100vw-1rem)]">
                 <NotificationDropdown items={notifications} />
               </div>
             )}

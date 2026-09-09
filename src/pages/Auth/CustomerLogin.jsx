@@ -27,6 +27,15 @@ const CustomerLogin = () => {
         role: ROLES.customer,
       });
       toast.success("Logged in!");
+      // If the account hasn't been email-verified yet, send the user to the
+      // verification page before letting them into the app.
+      if (user?.isVerified === false) {
+        navigate("/verify-email", {
+          replace: true,
+          state: { email: identifier.trim().toLowerCase() },
+        });
+        return;
+      }
       // If the user was redirected here (e.g. from "Add to Cart" on a food
       // page), return them to where they were. Otherwise go to home page.
       const from = location.state?.from;
@@ -79,18 +88,9 @@ const CustomerLogin = () => {
             </div>
 
             <div>
-              <div className="flex items-center justify-between">
-                <label className="label">
-                  <span className="label-text">Password</span>
-                </label>
-                <a
-                  href="#"
-                  onClick={(e) => e.preventDefault()}
-                  className="text-sm text-primary link link-primary"
-                >
-                  Forgot Password?
-                </a>
-              </div>
+              <label className="label">
+                <span className="label-text">Password</span>
+              </label>
               <div className="relative">
                 <Lock className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-base-content/40" />
                 <input
@@ -113,6 +113,18 @@ const CustomerLogin = () => {
                     <Eye className="w-5 h-5" />
                   )}
                 </button>
+              </div>
+              <div className="flex justify-end mt-1">
+                <Link
+                  to="/forgot-password"
+                  state={{
+                    email: identifier.includes("@") ? identifier : "",
+                    from: "/customer/login",
+                  }}
+                  className="text-sm text-primary link link-primary"
+                >
+                  Forgot Password?
+                </Link>
               </div>
             </div>
 

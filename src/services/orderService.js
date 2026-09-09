@@ -22,10 +22,21 @@ function writeLocalOrder(order) {
   }
 }
 
+function updateLocalOrder(order) {
+  const list = readLocalOrders().map((o) =>
+    o.order_no === order.order_no ? order : o
+  );
+  try {
+    localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(list));
+  } catch {
+    // Storage may be full/blocked; non-critical.
+  }
+}
+
 /**
- * Place a new order for the authenticated customer.
- * Returns the created order (with order_no + tracking_id). Also caches it
- * locally so the invoice can render offline.
+ * Place a new order for the authenticated customer (Cash on Delivery — the
+ * order is created immediately). Returns the created order (with order_no +
+ * tracking_id). Also caches it locally so the invoice can render offline.
  */
 export async function createOrder(payload) {
   const { data } = await apiClient.post("/api/user/orders", payload, {
@@ -33,6 +44,52 @@ export async function createOrder(payload) {
   });
   if (data?.order) writeLocalOrder(data.order);
   return data.order;
+}
+
+/**
+ * Reserve an order for an online payment (bKash / Nagad / Card). No real order
+ * is created here — that only happens on successful payment confirmation, so
+ * an order is never confirmed unless the customer actually pays.
+ * Returns the payment intent (order_no, items, total, method).
+ */
+export async function createPaymentIntent(payload) {
+  const { data } = await apiClient.post("/api/user/payments/intent", payload, {
+    timeout: 8000,
+  });
+  return data.intent;
+}
+
+/**
+ * Fetch the payment intent for the Stripe-style checkout page. Falls back to
+ * the order itself (COD / already-confirmed online orders).
+ */
+export async function getPaymentIntent(orderNo) {
+  try {
+    const { data } = await apiClient.get(`/api/user/payments/${orderNo}`, {
+      timeout: 4000,
+    });
+    return data.order;
+  } catch {
+    // The intent may not exist (COD order, or direct navigation) — in that
+    // case the order record itself carries the same display data.
+    return fetchOrder(orderNo);
+  }
+}
+
+/**
+ * Complete the online payment for an order (bKash / Nagad / Card).
+ * Creates + confirms the real order as Paid. The Payment page calls this
+ * after the customer taps "Pay now". Returns { success, alreadyPaid, order }
+ * and syncs the local cache.
+ */
+export async function payOrder(orderNo) {
+  const { data } = await apiClient.post(
+    `/api/user/payments/${orderNo}/confirm`,
+    {},
+    { timeout: 8000 }
+  );
+  if (data?.order) updateLocalOrder(data.order);
+  return data;
 }
 
 /**

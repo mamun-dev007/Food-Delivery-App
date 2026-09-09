@@ -65,7 +65,7 @@ const NotificationDropdown = ({ notifications, unreadCount, onReadAll, onReadOne
       </button>
 
       {open && (
-        <div className="absolute right-0 top-12 z-50 w-80 overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-xl">
+        <div className="absolute right-0 top-12 z-50 w-80 max-w-[calc(100vw-1rem)] overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-xl max-sm:fixed max-sm:inset-x-3 max-sm:top-14 max-sm:w-auto max-sm:max-w-none">
           <div className="flex items-center justify-between border-b border-base-200 px-4 py-3">
             <p className="text-sm font-semibold text-base-content">Notifications</p>
             <button

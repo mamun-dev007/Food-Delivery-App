@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bell, ChevronDown, Menu, Moon, Search, ShoppingCart, Sun } from "lucide-react";
+import { Bell, ChevronDown, Menu, Moon, ShoppingCart, Sun } from "lucide-react";
 import { Avatar } from "../admin/SmartImage";
 import { useAuthStore } from "../../store/authStore";
 import { useCartStore } from "../../store/cartStore";
@@ -23,8 +23,6 @@ const CustomerNavbar = ({
   const isDark = theme === "dark";
   const navigate = useNavigate();
   const [openMenu, setOpenMenu] = useState(null); // "bell" | "profile" | null
-  const [showSearch, setShowSearch] = useState(false);
-  const [query, setQuery] = useState("");
   const rootRef = useRef(null);
   const cartCount = cartItems.reduce((s, i) => s + (i.qty || 1), 0);
 
@@ -32,19 +30,11 @@ const CustomerNavbar = ({
     const onClick = (e) => {
       if (rootRef.current && !rootRef.current.contains(e.target)) {
         setOpenMenu(null);
-        setShowSearch(false);
       }
     };
     document.addEventListener("click", onClick);
     return () => document.removeEventListener("click", onClick);
   }, []);
-
-  const submitSearch = (e) => {
-    e.preventDefault();
-    navigate(query.trim() ? `/search?q=${encodeURIComponent(query.trim())}` : "/search");
-    setShowSearch(false);
-    setQuery("");
-  };
 
   const firstName = (user?.name || "Foodie").trim().split(" ")[0];
 
@@ -76,33 +66,6 @@ const CustomerNavbar = ({
 
         {/* Right side */}
         <div ref={rootRef} className="ml-auto flex items-center gap-2">
-          {/* Search */}
-          {showSearch ? (
-            <form
-              onSubmit={submitSearch}
-              className="flex items-center overflow-hidden rounded-xl border border-base-300 bg-base-100 focus-within:border-primary"
-            >
-              <input
-                autoFocus
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search foods or restaurants…"
-                className="w-40 bg-transparent px-3 py-2 text-sm outline-none sm:w-56"
-              />
-              <button type="submit" className="px-2 text-base-content/50" aria-label="Search">
-                <Search className="h-4 w-4" />
-              </button>
-            </form>
-          ) : (
-            <button
-              onClick={() => setShowSearch(true)}
-              className="flex h-10 w-10 items-center justify-center rounded-xl border border-base-300 bg-base-100 text-base-content/60 transition-colors hover:bg-base-200"
-              aria-label="Search"
-            >
-              <Search className="h-5 w-5" />
-            </button>
-          )}
-
           {/* Cart */}
           <button
             onClick={() => navigate("/customer/cart")}
@@ -145,7 +108,7 @@ const CustomerNavbar = ({
               )}
             </button>
             {openMenu === "bell" && (
-              <div className="absolute right-0 top-full">
+              <div className="z-50 max-sm:fixed max-sm:inset-x-3 max-sm:top-14 sm:absolute sm:right-0 sm:top-full sm:max-w-[calc(100vw-1rem)]">
                 <NotificationDropdown
                   items={notifications}
                   onReadOne={onNotificationRead}
@@ -159,7 +122,7 @@ const CustomerNavbar = ({
           </div>
 
           {/* Profile */}
-          <div className="relative hidden items-center sm:flex">
+          <div className="relative flex items-center">
             <button
               onClick={(e) => {
                 e.stopPropagation();
